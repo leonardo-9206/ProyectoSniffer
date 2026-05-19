@@ -1,9 +1,11 @@
 #include <iostream>
 #include <pcap.h>
 
+using namespace std;
+
 // Función Callback: Se ejecuta cada vez que Npcap captura un paquete
 void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data) {
-    std::cout << "¡Paquete recibido! Longitud: " << header->len << " bytes" << std::endl;
+    cout << "¡Paquete recibido! Longitud: " << header->len << " bytes" << endl;
 }
 
 int main() {
@@ -14,35 +16,35 @@ int main() {
     pcap_t *adhandle;
     char errbuf[PCAP_ERRBUF_SIZE];
 
-    std::cout << "Iniciando Sniffer C++..." << std::endl;
+    cout << "Iniciando Sniffer C++..." << endl;
 
     // 1. Obtener la lista de dispositivos de red
     if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        std::cerr << "Error en pcap_findalldevs: " << errbuf << std::endl;
+        cerr << "Error en pcap_findalldevs: " << errbuf << endl;
         return 1;
     }
 
     if (alldevs == nullptr) {
-        std::cout << "No se encontraron interfaces de red. Asegúrate de que Npcap esté instalado." << std::endl;
+        cout << "No se encontraron interfaces de red. Asegúrate de que Npcap esté instalado." << endl;
         return 0;
     }
 
-    std::cout << "Interfaces de red disponibles:" << std::endl;
+    cout << "Interfaces de red disponibles:" << endl;
     for (d = alldevs; d != nullptr; d = d->next) {
-        std::cout << ++i << ". " << d->name;
+        cout << ++i << ". " << d->name;
         if (d->description)
-            std::cout << " (" << d->description << ")";
+            cout << " (" << d->description << ")";
         else
-            std::cout << " (Sin descripción disponible)";
-        std::cout << std::endl;
+            cout << " (Sin descripción disponible)";
+        cout << endl;
     }
 
     // 2. Pedir al usuario que seleccione una interfaz
-    std::cout << "\nIngresa el numero de la interfaz que deseas sniffear (1-" << i << "): ";
-    std::cin >> inum;
+    cout << "\nIngresa el numero de la interfaz que deseas sniffear (1-" << i << "): ";
+    cin >> inum;
 
     if (inum < 1 || inum > i) {
-        std::cout << "Número de interfaz fuera de rango." << std::endl;
+        cout << "Número de interfaz fuera de rango." << endl;
         pcap_freealldevs(alldevs);
         return -1;
     }
@@ -50,14 +52,14 @@ int main() {
     // Saltar a la interfaz seleccionada
     for (d = alldevs, i = 0; i < inum - 1; d = d->next, i++);
 
-    std::cout << "\nAbriendo interfaz: " << d->description << "..." << std::endl;
+    cout << "\nAbriendo interfaz: " << d->description << "..." << endl;
 
     // 3. Abrir el adaptador en modo promiscuo
     // 65536 = tamaño del paquete a capturar (garantiza capturar el paquete entero)
     // 1 = modo promiscuo (captura todo el tráfico que pasa por la red, no solo el dirigido a esta PC)
     // 1000 = timeout de lectura (ms)
     if ((adhandle = pcap_open_live(d->name, 65536, 1, 1000, errbuf)) == nullptr) {
-        std::cerr << "\nError al abrir el adaptador. Npcap no soporta esta interfaz." << std::endl;
+        cerr << "\nError al abrir el adaptador. Npcap no soporta esta interfaz." << endl;
         pcap_freealldevs(alldevs);
         return -1;
     }
@@ -66,7 +68,7 @@ int main() {
     pcap_freealldevs(alldevs);
 
     // 4. Iniciar la captura de paquetes (bucle infinito hasta que haya un error)
-    std::cout << "Escuchando tráfico en " << d->description << "...\n" << std::endl;
+    cout << "Escuchando tráfico en " << d->description << "...\n" << endl;
     
     // pcap_loop captura paquetes indefinidamente y llama a 'packet_handler' por cada uno
     pcap_loop(adhandle, 0, packet_handler, nullptr);
