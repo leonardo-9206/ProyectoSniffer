@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "Compilar y Ejecutar Sniffer",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "g++ -g \"${workspaceFolder}\\*.cpp\" -o \"${workspaceFolder}\\build\\sniffer.exe\" -I\"${workspaceFolder}\\npcapSDK\\Include\" -L\"${workspaceFolder}\\npcapSDK\\Lib\\x64\" -lwpcap -lPacket -lws2_32 -DWPCAP -DHAVE_REMOTE && \"${workspaceFolder}\\build\\sniffer.exe\""
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "detail": "Compila y ejecuta el Sniffer automaticamente."
+        }
+    ]
+}
