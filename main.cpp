@@ -4,10 +4,13 @@
 #include <string>
 #include <sstream>
 #include <winsock2.h>
+#include <thread>
+#include <chrono>
+#include <conio.h>
 
 using namespace std;
 
-/* Estructura para almacenar una dirección IP (4 bytes) */
+//para almacenar la direccion IP 4 bytes
 typedef struct ip_address {
     u_char byte1;
     u_char byte2;
@@ -15,7 +18,7 @@ typedef struct ip_address {
     u_char byte4;
 } ip_address;
 
-/* Estructura de la cabecera IPv4 */
+//cabecera IPv4
 typedef struct ip_header {
     u_char  ver_ihl;        // Version (4 bits) + Internet header length (4 bits)
     u_char  tos;            // Type of service 
@@ -204,14 +207,30 @@ int main() {
 
     pcap_freealldevs(alldevs);
 
-    cout << "Escuchando trafico... (Capturaremos 50 paquetes para prueba)" << endl;
+    cout << "Escuchando trafico... (Presiona CUALQUIER TECLA para detener la captura)" << endl;
     
-    // Capturar 50 paquetes como prueba (cambiar el 50 a 0 para modo infinito)
-    pcap_loop(adhandle, 50, packet_handler, nullptr);
+    // Creamos un hilo paralelo para esperar la tecla del usuario
+    thread hilo_teclado([&adhandle]() {
+        // Espera hasta que el usuario presione una tecla
+        while (!_kbhit()) {
+            this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        _getch(); // Limpia la tecla presionada del buffer
+        cout << "\n[!] Tecla detectada. Deteniendo el sniffer de manera segura..." << endl;
+        // Rompe el ciclo infinito de pcap_loop
+        pcap_breakloop(adhandle); 
+    });
+
+    // pcap_loop itera infinitamente (por el 0) bloqueando el hilo principal
+    // Solo se detendrá cuando hilo_teclado mande a llamar a pcap_breakloop
+    pcap_loop(adhandle, 0, packet_handler, nullptr);
+
+    // Esperamos a que el hilo del teclado termine antes de cerrar
+    if (hilo_teclado.joinable()) {
+        hilo_teclado.join();
+    }
 
     pcap_close(adhandle);
-    
     cout << "\nCaptura detenida. Paquetes procesados en RAM: " << lista_paquetes.size() << endl;
-
     return 0;
 }
