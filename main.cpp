@@ -236,6 +236,30 @@ int main() {
 
     pcap_freealldevs(alldevs);
     
+    // --- FASE 3: APLICACION DE FILTROS BPF ---
+    cin.ignore(); // Limpiar el buffer del cin anterior
+    string filtro_bpf;
+    cout << "\nIngresa un filtro BPF (ej. 'tcp port 80', 'ip src 192.168.1.1')\no presiona Enter para capturar todo: ";
+    getline(cin, filtro_bpf);
+
+    if (!filtro_bpf.empty()) {
+        struct bpf_program fcode;
+        // PCAP_NETMASK_UNKNOWN asume que no sabemos la mascara de red
+        if (pcap_compile(adhandle, &fcode, filtro_bpf.c_str(), 1, PCAP_NETMASK_UNKNOWN) < 0) {
+            cerr << "\nError compilando el filtro. Verifica la sintaxis." << endl;
+            pcap_close(adhandle);
+            return -1;
+        }
+        if (pcap_setfilter(adhandle, &fcode) < 0) {
+            cerr << "\nError aplicando el filtro." << endl;
+            pcap_close(adhandle);
+            return -1;
+        }
+        cout << "Filtro [" << filtro_bpf << "] aplicado exitosamente." << endl;
+    } else {
+        cout << "Sin filtro. Capturando TODO el trafico." << endl;
+    }
+
     // Creamos el archivo CSV en blanco y escribimos las cabeceras ANTES de empezar a capturar
     exportarCSV("captura_trafico.csv", false);
 
