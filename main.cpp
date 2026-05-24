@@ -7,10 +7,11 @@
 #include <thread>
 #include <chrono>
 #include <conio.h>
+#include <fstream> // Para exportar a CSV
 
 using namespace std;
 
-//para almacenar la direccion IP 4 bytes
+/* Estructura para almacenar una dirección IP (4 bytes) */
 typedef struct ip_address {
     u_char byte1;
     u_char byte2;
@@ -18,39 +19,39 @@ typedef struct ip_address {
     u_char byte4;
 } ip_address;
 
-//cabecera IPv4
+/* Estructura de la cabecera IPv4 */
 typedef struct ip_header {
-    u_char  ver_ihl;        // Version (4 bits) + Internet header length (4 bits)
-    u_char  tos;            // Type of service 
-    u_short tlen;           // Total length 
-    u_short identification; // Identification
-    u_short flags_fo;       // Flags (3 bits) + Fragment offset (13 bits)
-    u_char  ttl;            // Time to live
-    u_char  proto;          // Protocol
-    u_short crc;            // Header checksum
-    ip_address  saddr;      // Source address
-    ip_address  daddr;      // Destination address
+    u_char  ver_ihl;
+    u_char  tos;
+    u_short tlen;
+    u_short identification;
+    u_short flags_fo;
+    u_char  ttl;
+    u_char  proto;
+    u_short crc;
+    ip_address  saddr;
+    ip_address  daddr;
 } ip_header;
 
 /* Cabecera UDP (8 bytes) */
 typedef struct udp_header {
-    u_short sport;          // Source port
-    u_short dport;          // Destination port
-    u_short len;            // Datagram length
-    u_short crc;            // Checksum
+    u_short sport;
+    u_short dport;
+    u_short len;
+    u_short crc;
 } udp_header;
 
 /* Cabecera TCP (20 bytes mínimo) */
 typedef struct tcp_header {
-    u_short sport;          // Source port
-    u_short dport;          // Destination port
-    u_int   seq;            // Sequence number
-    u_int   ack;            // Acknowledgement number
-    u_char  data_offset;    // Data offset
-    u_char  flags;          // Flags
-    u_short window;         // Window size
-    u_short crc;            // Checksum
-    u_short urp;            // Urgent pointer
+    u_short sport;
+    u_short dport;
+    u_int   seq;
+    u_int   ack;
+    u_char  data_offset;
+    u_char  flags;
+    u_short window;
+    u_short crc;
+    u_short urp;
 } tcp_header;
 
 /* Estructura para almacenar el paquete capturado en RAM */
@@ -61,19 +62,47 @@ struct PaqueteCapturado {
     int puerto_origen;
     int puerto_destino;
     string servicio;
+    vector<unsigned char> raw_data; // AQUI GUARDAMOS LOS BYTES CRUDOS DEL PAQUETE
 };
 
 // Vector global para guardar los paquetes capturados
 vector<PaqueteCapturado> lista_paquetes;
 
-// Función para convertir la IP a String
+// Función para exportar la RAM al CSV
+void exportarCSV(const string& nombre_archivo, bool append) {
+    ofstream archivo;
+    if (append) {
+        archivo.open(nombre_archivo, ios::app); // Modo "Append" (Añadir al final)
+    } else {
+        archivo.open(nombre_archivo); // Modo Normal (Sobrescribe y crea nuevo)
+        // Escribimos las cabeceras del CSV
+        archivo << "Protocolo,Servicio,IP Origen,Puerto Origen,IP Destino,Puerto Destino,Bytes Totales" << endl;
+    }
+
+    if (!archivo.is_open()) {
+        cerr << "Error al abrir el archivo " << nombre_archivo << endl;
+        return;
+    }
+
+    for (const auto& p : lista_paquetes) {
+        archivo << p.protocolo << "," 
+                << p.servicio << ","
+                << p.ip_origen << ","
+                << p.puerto_origen << ","
+                << p.ip_destino << ","
+                << p.puerto_destino << ","
+                << p.raw_data.size() << endl;
+    }
+    
+    archivo.close();
+}
+
 string ipToString(ip_address ip) {
     stringstream ss;
     ss << (int)ip.byte1 << "." << (int)ip.byte2 << "." << (int)ip.byte3 << "." << (int)ip.byte4;
     return ss.str();
 }
 
-// Función para mapear los puertos a los servicios requeridos por el profesor
 string obtenerServicio(int puerto) {
     switch (puerto) {
         case 20: return "FTP (Data)";
@@ -109,10 +138,8 @@ void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_cha
     tcp_header *th;
     u_int ip_len;
 
-    // 1. Saltar la cabecera Ethernet (siempre 14 bytes)
     ih = (ip_header *)(pkt_data + 14);
 
-    // 2. Procesar solo si la versión de IP es 4 (IPv4)
     if ((ih->ver_ihl >> 4) == 4) {
         PaqueteCapturado paquete;
         paquete.ip_origen = ipToString(ih->saddr);
@@ -120,45 +147,47 @@ void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_cha
         paquete.puerto_origen = 0;
         paquete.puerto_destino = 0;
         paquete.servicio = "Desconocido";
+        
+        // GUARDANDO EL PAQUETE "RAW" COMPLETO
+        paquete.raw_data.assign(pkt_data, pkt_data + header->caplen);
 
-        // Extraer la longitud de la cabecera IP
         ip_len = (ih->ver_ihl & 0xf) * 4;
 
-        // 3. Determinar la Capa de Transporte (Puertos)
-        if (ih->proto == 6) { // TCP
+        if (ih->proto == 6) { 
             paquete.protocolo = "TCP";
             th = (tcp_header *)((u_char*)ih + ip_len);
-            paquete.puerto_origen = ntohs(th->sport); // ntohs convierte del formato de red a host
+            paquete.puerto_origen = ntohs(th->sport); 
             paquete.puerto_destino = ntohs(th->dport);
-        } else if (ih->proto == 17) { // UDP
+        } else if (ih->proto == 17) { 
             paquete.protocolo = "UDP";
             uh = (udp_header *)((u_char*)ih + ip_len);
             paquete.puerto_origen = ntohs(uh->sport);
             paquete.puerto_destino = ntohs(uh->dport);
-        } else if (ih->proto == 1) { // ICMP
+        } else if (ih->proto == 1) { 
             paquete.protocolo = "ICMP";
         } else {
             paquete.protocolo = "Otro (" + to_string(ih->proto) + ")";
         }
 
-        // 4. Mapear el servicio según los requerimientos del profesor
         if (paquete.puerto_origen > 0 || paquete.puerto_destino > 0) {
             string servicio_dst = obtenerServicio(paquete.puerto_destino);
             string servicio_src = obtenerServicio(paquete.puerto_origen);
             
-            // Preferimos nombrar el paquete por el destino al que nos conectamos, 
-            // pero si viene del servidor, tomamos el puerto de origen.
             if (servicio_dst != "Desconocido") paquete.servicio = servicio_dst;
             else if (servicio_src != "Desconocido") paquete.servicio = servicio_src;
         }
 
-        // 5. Guardar en la memoria (vector)
         lista_paquetes.push_back(paquete);
 
-        // 6. Imprimir la salida final en consola para probar
         cout << "[" << paquete.protocolo << " | " << paquete.servicio << "] " 
              << paquete.ip_origen << ":" << paquete.puerto_origen << " ---> " 
              << paquete.ip_destino << ":" << paquete.puerto_destino << endl;
+             
+        // PROTECCION DE RAM: Cada 1000 paquetes, los guardamos en CSV y vaciamos la memoria RAM
+        if (lista_paquetes.size() >= 1000) {
+            exportarCSV("captura_trafico.csv", true); // "true" añade sin borrar lo anterior
+            lista_paquetes.clear(); // Liberamos la RAM
+        }
     }
 }
 
@@ -178,7 +207,7 @@ int main() {
     }
 
     if (alldevs == nullptr) {
-        cout << "No se encontraron interfaces. Revisa permisos o instalación de Npcap." << endl;
+        cout << "No se encontraron interfaces. Revisa permisos o instalacion de Npcap." << endl;
         return 0;
     }
 
@@ -206,31 +235,35 @@ int main() {
     }
 
     pcap_freealldevs(alldevs);
+    
+    // Creamos el archivo CSV en blanco y escribimos las cabeceras ANTES de empezar a capturar
+    exportarCSV("captura_trafico.csv", false);
 
     cout << "Escuchando trafico... (Presiona CUALQUIER TECLA para detener la captura)" << endl;
     
-    // Creamos un hilo paralelo para esperar la tecla del usuario
     thread hilo_teclado([&adhandle]() {
-        // Espera hasta que el usuario presione una tecla
         while (!_kbhit()) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
-        _getch(); // Limpia la tecla presionada del buffer
+        _getch(); 
         cout << "\n[!] Tecla detectada. Deteniendo el sniffer de manera segura..." << endl;
-        // Rompe el ciclo infinito de pcap_loop
         pcap_breakloop(adhandle); 
     });
 
-    // pcap_loop itera infinitamente (por el 0) bloqueando el hilo principal
-    // Solo se detendrá cuando hilo_teclado mande a llamar a pcap_breakloop
     pcap_loop(adhandle, 0, packet_handler, nullptr);
 
-    // Esperamos a que el hilo del teclado termine antes de cerrar
     if (hilo_teclado.joinable()) {
         hilo_teclado.join();
     }
 
     pcap_close(adhandle);
-    cout << "\nCaptura detenida. Paquetes procesados en RAM: " << lista_paquetes.size() << endl;
+    
+    // Al detener la captura, guardamos cualquier paquete que haya quedado en la RAM pendiente
+    exportarCSV("captura_trafico.csv", true);
+    int paquetes_finales = lista_paquetes.size();
+    lista_paquetes.clear();
+    
+    cout << "\nCaptura detenida y guardada exitosamente en 'captura_trafico.csv'." << endl;
+    
     return 0;
 }
