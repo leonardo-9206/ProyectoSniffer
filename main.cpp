@@ -1,0 +1,546 @@
+// Packet Sniffer - Fase 4: GUI con Dear ImGui + GLFW + OpenGL3
+// Arquitectura: hilo principal = render loop ImGui
+//               hilo secundario = pcap_loop (captura de paquetes)
+
+#include <pcap.h>
+#include <winsock2.h>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <vector>
+#include <string>
+#include <fstream>
+#include <cstdio>
+#include <cstring>
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <GLFW/glfw3.h>
+
+using namespace std;
+
+// ─── Cabeceras de red (sin padding) ─────────────────────────────────────────
+#pragma pack(push, 1)
+struct ip_address { u_char b1, b2, b3, b4; };
+
+struct ip_header {
+    u_char  ver_ihl, tos;
+    u_short tlen, id, flags_fo;
+    u_char  ttl, proto;
+    u_short crc;
+    ip_address saddr, daddr;
+};
+
+struct udp_header { u_short sport, dport, len, crc; };
+
+struct tcp_header {
+    u_short sport, dport;
+    u_int   seq, ack;
+    u_char  data_offset, flags;
+    u_short window, crc, urp;
+};
+#pragma pack(pop)
+
+// ─── Estructuras de datos de la aplicación ──────────────────────────────────
+
+// Metadatos livianos: usados para la tabla (se copian cada frame sin costo)
+struct PaqueteMeta {
+    string ip_origen, ip_destino, protocolo, servicio;
+    int    puerto_origen  = 0;
+    int    puerto_destino = 0;
+    size_t raw_size       = 0;
+};
+
+// ─── Estado global compartido entre hilos ───────────────────────────────────
+static vector<PaqueteMeta>          g_meta;   // metadatos para la tabla
+static vector<vector<uint8_t>>      g_raw;    // bytes crudos por paquete
+static mutex                        g_mtx;
+static atomic<bool>                 g_capturando{false};
+static pcap_t*                      g_handle = nullptr;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+static string ipStr(ip_address ip) {
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%d.%d.%d.%d", ip.b1, ip.b2, ip.b3, ip.b4);
+    return buf;
+}
+
+static const char* getServicio(int puerto) {
+    switch (puerto) {
+        case 20:   return "FTP-Data";
+        case 21:   return "FTP";
+        case 22:   return "SSH";
+        case 23:   return "Telnet";
+        case 25:   return "SMTP";
+        case 53:   return "DNS";
+        case 67:   return "DHCP-S";
+        case 68:   return "DHCP-C";
+        case 80:   return "HTTP";
+        case 110:  return "POP3";
+        case 123:  return "NTP";
+        case 143:  return "IMAP";
+        case 443:  return "HTTPS";
+        case 445:  return "SMB";
+        case 587:  return "SMTP-S";
+        case 993:  return "IMAPS";
+        case 3306: return "MySQL";
+        case 3389: return "RDP";
+        case 5432: return "Postgres";
+        default:   return "---";
+    }
+}
+
+// ─── Callback de captura (se ejecuta en el hilo secundario) ─────────────────
+void packet_handler(u_char*, const struct pcap_pkthdr* hdr, const u_char* pkt) {
+    if (hdr->caplen < 14) return;
+
+    auto* ih = (ip_header*)(pkt + 14);
+    if ((ih->ver_ihl >> 4) != 4) return; // solo IPv4
+
+    PaqueteMeta meta;
+    meta.ip_origen  = ipStr(ih->saddr);
+    meta.ip_destino = ipStr(ih->daddr);
+    meta.raw_size   = hdr->caplen;
+
+    u_int ihl = (ih->ver_ihl & 0xf) * 4;
+
+    if (ih->proto == 6 && hdr->caplen >= 14u + ihl + 20u) {
+        meta.protocolo = "TCP";
+        auto* th = (tcp_header*)((u_char*)ih + ihl);
+        meta.puerto_origen  = ntohs(th->sport);
+        meta.puerto_destino = ntohs(th->dport);
+    } else if (ih->proto == 17 && hdr->caplen >= 14u + ihl + 8u) {
+        meta.protocolo = "UDP";
+        auto* uh = (udp_header*)((u_char*)ih + ihl);
+        meta.puerto_origen  = ntohs(uh->sport);
+        meta.puerto_destino = ntohs(uh->dport);
+    } else if (ih->proto == 1) {
+        meta.protocolo = "ICMP";
+    } else {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Proto(%d)", ih->proto);
+        meta.protocolo = buf;
+    }
+
+    const char* svc = getServicio(meta.puerto_destino);
+    if (string(svc) == "---") svc = getServicio(meta.puerto_origen);
+    meta.servicio = svc;
+
+    vector<uint8_t> raw(pkt, pkt + hdr->caplen);
+
+    lock_guard<mutex> lk(g_mtx);
+    g_meta.push_back(move(meta));
+    g_raw.push_back(move(raw));
+}
+
+// ─── Hilo de captura ─────────────────────────────────────────────────────────
+void runCapture(string iface, string filtro) {
+    char errbuf[PCAP_ERRBUF_SIZE];
+    g_handle = pcap_open_live(iface.c_str(), 65536, 1, 1000, errbuf);
+    if (!g_handle) {
+        g_capturando = false;
+        return;
+    }
+
+    if (!filtro.empty()) {
+        struct bpf_program fp;
+        if (pcap_compile(g_handle, &fp, filtro.c_str(), 1, PCAP_NETMASK_UNKNOWN) == 0) {
+            pcap_setfilter(g_handle, &fp);
+            pcap_freecode(&fp);
+        }
+    }
+
+    pcap_loop(g_handle, 0, packet_handler, nullptr);
+    pcap_close(g_handle);
+    g_handle     = nullptr;
+    g_capturando = false;
+}
+
+// ─── Vista hexadecimal ───────────────────────────────────────────────────────
+static void renderHex(const vector<uint8_t>& data) {
+    if (data.empty()) { ImGui::TextDisabled("(sin datos)"); return; }
+
+    static char buf[1024 * 128];
+    int pos = 0;
+    const int cap = (int)sizeof(buf) - 128;
+
+    for (size_t i = 0; i < data.size() && pos < cap; i += 16) {
+        pos += snprintf(buf + pos, cap - pos, "%04X  ", (unsigned)i);
+
+        for (int j = 0; j < 16; j++) {
+            if (i + j < data.size())
+                pos += snprintf(buf + pos, cap - pos, "%02X ", data[i + j]);
+            else
+                pos += snprintf(buf + pos, cap - pos, "   ");
+            if (j == 7) pos += snprintf(buf + pos, cap - pos, " ");
+        }
+
+        pos += snprintf(buf + pos, cap - pos, "  ");
+        for (int j = 0; j < 16 && i + j < data.size(); j++) {
+            uint8_t c = data[i + j];
+            buf[pos++] = (c >= 32 && c < 127) ? (char)c : '.';
+        }
+        buf[pos++] = '\n';
+    }
+    buf[pos] = '\0';
+
+    ImGui::InputTextMultiline("##hex", buf, sizeof(buf),
+        ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
+}
+
+// ─── Vista de árbol con detalles del paquete ─────────────────────────────────
+static void renderDetalles(const PaqueteMeta& meta, const vector<uint8_t>& raw) {
+    if (raw.size() < 14) { ImGui::TextDisabled("Paquete demasiado corto"); return; }
+
+    // ── Ethernet II ──
+    if (ImGui::TreeNodeEx("Ethernet II", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Dst MAC : %02X:%02X:%02X:%02X:%02X:%02X",
+                    raw[0],raw[1],raw[2],raw[3],raw[4],raw[5]);
+        ImGui::Text("Src MAC : %02X:%02X:%02X:%02X:%02X:%02X",
+                    raw[6],raw[7],raw[8],raw[9],raw[10],raw[11]);
+        ImGui::Text("EtherType: 0x%02X%02X", raw[12], raw[13]);
+        ImGui::TreePop();
+    }
+
+    if (raw.size() < 34) return;
+    auto* ih  = (ip_header*)(raw.data() + 14);
+    u_int ihl = (ih->ver_ihl & 0xf) * 4;
+
+    // ── IPv4 ──
+    if (ImGui::TreeNodeEx("IPv4", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Version       : %d",       ih->ver_ihl >> 4);
+        ImGui::Text("Header Length : %d bytes", ihl);
+        ImGui::Text("TOS           : 0x%02X",   ih->tos);
+        ImGui::Text("Total Length  : %d",        ntohs(ih->tlen));
+        ImGui::Text("TTL           : %d",        ih->ttl);
+        ImGui::Text("Protocolo     : %d (%s)",   ih->proto, meta.protocolo.c_str());
+        ImGui::Text("Src IP        : %s",        meta.ip_origen.c_str());
+        ImGui::Text("Dst IP        : %s",        meta.ip_destino.c_str());
+        ImGui::TreePop();
+    }
+
+    // ── TCP ──
+    if (ih->proto == 6 && raw.size() >= 14u + ihl + 20u) {
+        auto* th = (tcp_header*)(raw.data() + 14 + ihl);
+        if (ImGui::TreeNodeEx("TCP", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Src Port : %d", ntohs(th->sport));
+            ImGui::Text("Dst Port : %d  (%s)", ntohs(th->dport), meta.servicio.c_str());
+            ImGui::Text("Seq      : %u", ntohl(th->seq));
+            ImGui::Text("Ack      : %u", ntohl(th->ack));
+            ImGui::Text("Flags    : 0x%02X  [%s%s%s%s%s%s]",
+                th->flags,
+                (th->flags & 0x02) ? "SYN " : "",
+                (th->flags & 0x10) ? "ACK " : "",
+                (th->flags & 0x01) ? "FIN " : "",
+                (th->flags & 0x04) ? "RST " : "",
+                (th->flags & 0x08) ? "PSH " : "",
+                (th->flags & 0x20) ? "URG " : "");
+            ImGui::Text("Window   : %d", ntohs(th->window));
+            ImGui::TreePop();
+        }
+    }
+    // ── UDP ──
+    else if (ih->proto == 17 && raw.size() >= 14u + ihl + 8u) {
+        auto* uh = (udp_header*)(raw.data() + 14 + ihl);
+        if (ImGui::TreeNodeEx("UDP", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Src Port  : %d", ntohs(uh->sport));
+            ImGui::Text("Dst Port  : %d  (%s)", ntohs(uh->dport), meta.servicio.c_str());
+            ImGui::Text("Length    : %d", ntohs(uh->len));
+            ImGui::Text("Checksum  : 0x%04X", ntohs(uh->crc));
+            ImGui::TreePop();
+        }
+    }
+    // ── ICMP ──
+    else if (ih->proto == 1 && raw.size() >= 14u + ihl + 4u) {
+        if (ImGui::TreeNodeEx("ICMP", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Type : %d", raw[14 + ihl]);
+            ImGui::Text("Code : %d", raw[14 + ihl + 1]);
+            ImGui::TreePop();
+        }
+    }
+}
+
+// ─── Exportar CSV ─────────────────────────────────────────────────────────────
+static bool exportarCSV(const char* archivo) {
+    ofstream f(archivo);
+    if (!f) return false;
+    f << "Protocolo,Servicio,IP Origen,Puerto Origen,IP Destino,Puerto Destino,Bytes\n";
+    lock_guard<mutex> lk(g_mtx);
+    for (size_t i = 0; i < g_meta.size(); i++) {
+        const auto& m = g_meta[i];
+        f << m.protocolo << "," << m.servicio << ","
+          << m.ip_origen << "," << m.puerto_origen << ","
+          << m.ip_destino << "," << m.puerto_destino << ","
+          << m.raw_size  << "\n";
+    }
+    return true;
+}
+
+// ─── Color por protocolo ──────────────────────────────────────────────────────
+static ImVec4 colorProtocolo(const string& proto) {
+    if (proto == "TCP")  return {0.40f, 0.80f, 1.00f, 1.0f};
+    if (proto == "UDP")  return {0.50f, 1.00f, 0.50f, 1.0f};
+    if (proto == "ICMP") return {1.00f, 0.85f, 0.30f, 1.0f};
+    return                      {0.80f, 0.80f, 0.80f, 1.0f};
+}
+
+// ─── main ─────────────────────────────────────────────────────────────────────
+int main() {
+    // ── GLFW ──
+    if (!glfwInit()) return 1;
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    GLFWwindow* window = glfwCreateWindow(1400, 850, "Packet Sniffer - Redes", nullptr, nullptr);
+    if (!window) { glfwTerminate(); return 1; }
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1);
+
+    // ── ImGui ──
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding   = 4.0f;
+    style.FrameRounding    = 3.0f;
+    style.ScrollbarRounding = 3.0f;
+
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+
+    // ── Enumerar interfaces de red ──
+    pcap_if_t* alldevs = nullptr;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_findalldevs(&alldevs, errbuf);
+
+    vector<string> iface_names, iface_descs;
+    for (pcap_if_t* d = alldevs; d; d = d->next) {
+        iface_names.push_back(d->name);
+        iface_descs.push_back(d->description ? d->description : d->name);
+    }
+    pcap_freealldevs(alldevs);
+
+    // ── Estado de la UI ──
+    int  sel_iface   = 0;
+    int  sel_paquete = -1;
+    char filtro_buf[256] = "";
+    char csv_path[256]   = "captura_trafico.csv";
+
+    // Caché del paquete seleccionado (evita lockear cada frame)
+    PaqueteMeta     cached_meta;
+    vector<uint8_t> cached_raw;
+    int             cached_idx = -1;
+
+    thread hilo_cap;
+    bool   exportado   = false;
+
+    // ── Render loop ───────────────────────────────────────────────────────────
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // Ventana que ocupa toda la pantalla
+        ImGui::SetNextWindowPos({0, 0});
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::Begin("##root", nullptr,
+            ImGuiWindowFlags_NoDecoration    | ImGuiWindowFlags_NoMove         |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+        // ── BARRA DE CONTROLES ────────────────────────────────────────────────
+        ImGui::Text("Interfaz:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(380);
+        if (!iface_descs.empty()) {
+            vector<const char*> ptrs;
+            for (auto& s : iface_descs) ptrs.push_back(s.c_str());
+            if (g_capturando) ImGui::BeginDisabled();
+            ImGui::Combo("##iface", &sel_iface, ptrs.data(), (int)ptrs.size());
+            if (g_capturando) ImGui::EndDisabled();
+        } else {
+            ImGui::TextColored({1, 0.4f, 0.4f, 1}, "No se encontraron interfaces.");
+        }
+
+        ImGui::SameLine();
+        ImGui::Text("Filtro BPF:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(200);
+        if (g_capturando) ImGui::BeginDisabled();
+        ImGui::InputText("##filtro", filtro_buf, sizeof(filtro_buf));
+        if (g_capturando) ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(ej: tcp port 443)");
+
+        // Botones Iniciar / Detener
+        ImGui::SameLine(0, 20);
+        if (!g_capturando) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        {0.15f, 0.55f, 0.15f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.20f, 0.75f, 0.20f, 1.0f});
+            if (ImGui::Button("  Iniciar  ") && !iface_names.empty()) {
+                sel_paquete = -1;
+                cached_idx  = -1;
+                exportado   = false;
+                { lock_guard<mutex> lk(g_mtx); g_meta.clear(); g_raw.clear(); }
+                g_capturando = true;
+                if (hilo_cap.joinable()) hilo_cap.join();
+                hilo_cap = thread(runCapture, iface_names[sel_iface], string(filtro_buf));
+            }
+            ImGui::PopStyleColor(2);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,        {0.65f, 0.15f, 0.15f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.85f, 0.20f, 0.20f, 1.0f});
+            if (ImGui::Button("  Detener  ")) {
+                if (g_handle) pcap_breakloop(g_handle);
+            }
+            ImGui::PopStyleColor(2);
+        }
+
+        ImGui::SameLine(0, 10);
+        if (ImGui::Button("Exportar CSV")) {
+            if (exportarCSV(csv_path)) exportado = true;
+        }
+        if (exportado) {
+            ImGui::SameLine();
+            ImGui::TextColored({0.3f, 1.0f, 0.3f, 1.0f}, "Guardado en %s", csv_path);
+        }
+
+        // Indicador de estado
+        size_t n_paquetes;
+        { lock_guard<mutex> lk(g_mtx); n_paquetes = g_meta.size(); }
+        ImGui::SameLine(0, 30);
+        if (g_capturando)
+            ImGui::TextColored({0.3f, 1.0f, 0.3f, 1.0f}, "● Capturando  [%zu paquetes]", n_paquetes);
+        else
+            ImGui::TextColored({0.5f, 0.5f, 0.5f, 1.0f}, "■ Detenido    [%zu paquetes]", n_paquetes);
+
+        ImGui::Separator();
+
+        // ── LAYOUT DE TRES PANELES ────────────────────────────────────────────
+        float avail_h = ImGui::GetContentRegionAvail().y;
+        float avail_w = ImGui::GetContentRegionAvail().x;
+        float top_h   = avail_h * 0.48f;
+        float bot_h   = avail_h * 0.52f - ImGui::GetStyle().ItemSpacing.y;
+        float half_w  = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+        // Snapshot liviano de metadatos (sin raw_data)
+        vector<PaqueteMeta> snap;
+        { lock_guard<mutex> lk(g_mtx); snap = g_meta; }
+
+        // ── PANEL 1: Tabla de paquetes ────────────────────────────────────────
+        ImGui::BeginChild("##tabla", {0, top_h}, true);
+        ImGui::TextDisabled("Paquetes capturados");
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("tbl", 7,
+            ImGuiTableFlags_Borders           | ImGuiTableFlags_RowBg           |
+            ImGuiTableFlags_ScrollY           | ImGuiTableFlags_Resizable       |
+            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_HighlightHoveredColumn))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("#",           ImGuiTableColumnFlags_WidthFixed,   55.0f);
+            ImGui::TableSetupColumn("Protocolo",   ImGuiTableColumnFlags_WidthFixed,   85.0f);
+            ImGui::TableSetupColumn("Servicio",    ImGuiTableColumnFlags_WidthFixed,   95.0f);
+            ImGui::TableSetupColumn("IP Origen",   ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Pto. Orig.",  ImGuiTableColumnFlags_WidthFixed,   80.0f);
+            ImGui::TableSetupColumn("IP Destino",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Pto. Dst.",   ImGuiTableColumnFlags_WidthFixed,   80.0f);
+            ImGui::TableHeadersRow();
+
+            // ListClipper: solo renderiza filas visibles → O(visible) no O(n)
+            ImGuiListClipper clipper;
+            clipper.Begin((int)snap.size());
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+                    const auto& m = snap[i];
+                    ImGui::TableNextRow();
+
+                    ImGui::TableSetColumnIndex(0);
+                    char label[16];
+                    snprintf(label, sizeof(label), "%d", i + 1);
+                    bool selected = (sel_paquete == i);
+                    if (ImGui::Selectable(label, selected,
+                            ImGuiSelectableFlags_SpanAllColumns,
+                            ImVec2(0, ImGui::GetTextLineHeight()))) {
+                        sel_paquete = i;
+                    }
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextColored(colorProtocolo(m.protocolo), "%s", m.protocolo.c_str());
+                    ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(m.servicio.c_str());
+                    ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(m.ip_origen.c_str());
+                    ImGui::TableSetColumnIndex(4); ImGui::Text("%d", m.puerto_origen);
+                    ImGui::TableSetColumnIndex(5); ImGui::TextUnformatted(m.ip_destino.c_str());
+                    ImGui::TableSetColumnIndex(6); ImGui::Text("%d", m.puerto_destino);
+                }
+            }
+
+            // Auto-scroll al último paquete durante captura
+            if (g_capturando && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 50.0f)
+                ImGui::SetScrollHereY(1.0f);
+
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+
+        // Actualiza caché del paquete seleccionado solo cuando cambia la selección
+        if (sel_paquete != cached_idx && sel_paquete >= 0) {
+            lock_guard<mutex> lk(g_mtx);
+            if (sel_paquete < (int)g_meta.size()) {
+                cached_meta = g_meta[sel_paquete];
+                cached_raw  = g_raw[sel_paquete];
+                cached_idx  = sel_paquete;
+            }
+        }
+
+        // ── PANEL 2: Árbol de detalles ────────────────────────────────────────
+        ImGui::BeginChild("##detalles", {half_w, bot_h}, true);
+        ImGui::TextDisabled("Detalles del paquete");
+        ImGui::Separator();
+        if (cached_idx >= 0)
+            renderDetalles(cached_meta, cached_raw);
+        else
+            ImGui::TextDisabled("Selecciona un paquete en la tabla.");
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        // ── PANEL 3: Vista hexadecimal ────────────────────────────────────────
+        ImGui::BeginChild("##hex_panel", {half_w, bot_h}, true);
+        ImGui::TextDisabled("Vista hexadecimal");
+        ImGui::Separator();
+        if (cached_idx >= 0)
+            renderHex(cached_raw);
+        else
+            ImGui::TextDisabled("Selecciona un paquete en la tabla.");
+        ImGui::EndChild();
+
+        ImGui::End();
+
+        // ── Renderizado OpenGL ────────────────────────────────────────────────
+        ImGui::Render();
+        int fb_w, fb_h;
+        glfwGetFramebufferSize(window, &fb_w, &fb_h);
+        glViewport(0, 0, fb_w, fb_h);
+        glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glfwSwapBuffers(window);
+    }
+
+    // ── Limpieza al cerrar ────────────────────────────────────────────────────
+    if (g_capturando && g_handle) pcap_breakloop(g_handle);
+    if (hilo_cap.joinable()) hilo_cap.join();
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
+}

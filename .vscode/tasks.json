@@ -1,0 +1,52 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "Compilar Sniffer",
+            "command": "C:\\mingw64\\mingw64\\bin\\g++.exe",
+            "args": [
+                "-g",
+                "-std=c++17",
+                "${workspaceFolder}\\main.cpp",
+                "${workspaceFolder}\\imgui\\imgui.cpp",
+                "${workspaceFolder}\\imgui\\imgui_demo.cpp",
+                "${workspaceFolder}\\imgui\\imgui_draw.cpp",
+                "${workspaceFolder}\\imgui\\imgui_tables.cpp",
+                "${workspaceFolder}\\imgui\\imgui_widgets.cpp",
+                "${workspaceFolder}\\imgui\\backends\\imgui_impl_glfw.cpp",
+                "${workspaceFolder}\\imgui\\backends\\imgui_impl_opengl3.cpp",
+                "-o",
+                "${workspaceFolder}\\build\\sniffer.exe",
+                "-I${workspaceFolder}\\npcapSDK\\Include",
+                "-I${workspaceFolder}\\imgui",
+                "-I${workspaceFolder}\\imgui\\backends",
+                "-I${workspaceFolder}\\glfw\\include",
+                "-L${workspaceFolder}\\npcapSDK\\Lib\\x64",
+                "-L${workspaceFolder}\\glfw\\lib-mingw-w64",
+                "-lwpcap",
+                "-lPacket",
+                "-lws2_32",
+                "-lglfw3",
+                "-lopengl32",
+                "-lgdi32",
+                "-static",
+                "-static-libgcc",
+                "-static-libstdc++",
+                "-DWPCAP",
+                "-DHAVE_REMOTE"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Compilacion C++ usando Npcap y Dear ImGui"
+        }
+    ]
+}

@@ -1,0 +1,27 @@
+# ── Carpeta de compilación ────────────────────────────────────────────────────
+# El .exe y los DLLs de runtime NO van al repo.
+# Los DLLs (wpcap.dll, Packet.dll) cada quien los copia desde su instalación
+# de Npcap: C:\Windows\System32\Npcap\ → build\
+build/
+
+# ── Archivos temporales de compilación ───────────────────────────────────────
+*.o
+*.obj
+*.d
+*.gch
+*.pch
+*.slo
+*.lo
+
+# ── Archivos de depuración de Windows ────────────────────────────────────────
+*.pdb
+
+# ── Editor personal ───────────────────────────────────────────────────────────
+.vscode/settings.json
+.vscode/launch.json
+
+# NOTA: Las librerías estáticas (.a, .lib) y los headers (.h) SÍ se suben
+# al repo para que todos puedan compilar sin descargar dependencias.
+# Solo se necesita instalar UNA VEZ por máquina:
+#   1. MinGW-w64 GCC 16 POSIX → extraer en C:\mingw64\  (winlibs.com)
+#   2. Npcap driver            → instalar desde npcap.com/#download
