@@ -4,7 +4,7 @@
         {
             "type": "cppbuild",
             "label": "Compilar Sniffer",
-            "command": "C:\\mingw64\\mingw64\\bin\\g++.exe",
+            "command": "g++",
             "args": [
                 "-g",
                 "-std=c++17",
