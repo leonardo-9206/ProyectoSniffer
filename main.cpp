@@ -362,43 +362,86 @@ int main() {
 
         ImGui::Spacing();
 
-        ImGui::BeginChild("##actividad", ImVec2(0, 0), true);
-        ImGui::Text("Actividad Reciente:");
-        ImGui::Separator();
+        ImGui::BeginChild("ListaPaquetes", ImVec2(0, -220), true);
+        if (ImGui::BeginTable("TablaPaquetes", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("No.", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+            ImGui::TableSetupColumn("Protocolo", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            ImGui::TableSetupColumn("Servicio", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableSetupColumn("IP Origen");
+            ImGui::TableSetupColumn("IP Destino");
+            ImGui::TableSetupColumn("Bytes", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupColumn("Acción", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableHeadersRow();
 
-        // Mostrar un flujo muy simple en lugar de una tabla
-        // Mostramos de lo más reciente a lo más viejo (ultimos 100)
-        int limite = 100;
-        int mostrados = 0;
-        for (int i = (int)snap.size() - 1; i >= 0 && mostrados < limite; i--) {
-            const auto& m = snap[i];
-            
-            // Texto amigable
-            string txt;
-            if (m.servicio != "---") {
-                txt = "Uso de " + m.servicio + " (" + m.protocolo + ") entre " + m.ip_origen + " y " + m.ip_destino;
-            } else {
-                txt = "Conexión " + m.protocolo + " entre " + m.ip_origen + " y " + m.ip_destino;
-            }
+            for (int i = 0; i < (int)snap.size(); i++) {
+                const auto& m = snap[i];
+                ImGui::TableNextRow();
+                
+                ImGui::TableSetColumnIndex(0);
+                char label[32];
+                snprintf(label, sizeof(label), "%d", i + 1);
+                bool is_selected = (sel_paquete == i);
+                if (ImGui::Selectable(label, is_selected, ImGuiSelectableFlags_SpanAllColumns)) {
+                    sel_paquete = i;
+                    cached_idx = i;
+                    cached_meta = m;
+                }
 
-            ImVec4 col = colorProtocolo(m.protocolo);
-            ImGui::Bullet(); ImGui::SameLine();
-            ImGui::TextColored(col, "%s", txt.c_str());
-            ImGui::SameLine();
-            ImGui::PushID(i);
-            if (ImGui::SmallButton("Hex")) {
-                lock_guard<mutex> lk(g_mtx);
-                if (i < (int)g_raw.size()) hex_raw_data = g_raw[i];
-                else hex_raw_data.clear();
-                open_hex_modal = true;
+                ImVec4 col = colorProtocolo(m.protocolo);
+                ImGui::TableSetColumnIndex(1); ImGui::TextColored(col, "%s", m.protocolo.c_str());
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%s", m.servicio.c_str());
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%s:%d", m.ip_origen.c_str(), m.puerto_origen);
+                ImGui::TableSetColumnIndex(4); ImGui::Text("%s:%d", m.ip_destino.c_str(), m.puerto_destino);
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%zu", m.raw_size);
+                
+                ImGui::TableSetColumnIndex(6);
+                ImGui::PushID(i);
+                if (ImGui::SmallButton("Hex")) {
+                    lock_guard<mutex> lk(g_mtx);
+                    if (i < (int)g_raw.size()) hex_raw_data = g_raw[i];
+                    else hex_raw_data.clear();
+                    open_hex_modal = true;
+                }
+                ImGui::PopID();
             }
-            ImGui::PopID();
-            mostrados++;
+            ImGui::EndTable();
         }
         if (snap.empty()) {
-            ImGui::TextDisabled("Aún no hay actividad...");
+            ImGui::TextDisabled("Aún no hay actividad. Dale click a Iniciar Monitor...");
         }
+        ImGui::EndChild();
 
+        // AREA 2: VISTA DE ARBOL DE DETALLES
+        ImGui::BeginChild("DetallesPaquete", ImVec2(0, 0), true);
+        ImGui::TextColored({0.4f, 0.8f, 1.0f, 1.0f}, "Análisis Detallado del Paquete Seleccionado");
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        if (sel_paquete >= 0 && sel_paquete == cached_idx) {
+            if (ImGui::TreeNodeEx("Capa de Enlace (Ethernet)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Text("Tamaño total capturado en la trama: %zu bytes", cached_meta.raw_size);
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNodeEx("Capa de Red (IPv4)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Text("Dirección IP de Origen: %s", cached_meta.ip_origen.c_str());
+                ImGui::Text("Dirección IP de Destino: %s", cached_meta.ip_destino.c_str());
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNodeEx("Capa de Transporte", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImVec4 col = colorProtocolo(cached_meta.protocolo);
+                ImGui::Text("Protocolo: "); ImGui::SameLine(); ImGui::TextColored(col, "%s", cached_meta.protocolo.c_str());
+                ImGui::Text("Puerto de Origen: %d", cached_meta.puerto_origen);
+                ImGui::Text("Puerto de Destino: %d", cached_meta.puerto_destino);
+                
+                if (cached_meta.servicio != "---") {
+                    ImGui::TextColored({0.3f, 1.0f, 0.3f, 1.0f}, "Servicio de aplicación detectado: %s", cached_meta.servicio.c_str());
+                }
+                ImGui::TreePop();
+            }
+        } else {
+            ImGui::TextDisabled("\nSelecciona un paquete en la tabla de arriba para ver sus detalles aquí.");
+        }
         ImGui::EndChild();
 
         if (open_hex_modal) {
