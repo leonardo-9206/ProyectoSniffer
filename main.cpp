@@ -1,7 +1,8 @@
-// Packet Sniffer - Fase 4: GUI con Dear ImGui + GLFW + OpenGL3
-// Arquitectura: hilo principal = render loop ImGui
-//               hilo secundario = pcap_loop (captura de paquetes)
-
+// Proyecto Final: Packet Sniffer
+// Equipo: Erich Leonardo, Diego Joao, Joshua Alejandro, Rodrigo Vazquez, Carlos Antonio
+// Descripcion: Sniffer desarrollado en C++ utilizando Npcap para la captura de paquetes 
+//              y Dear ImGui para la interfaz grafica.
+// Arquitectura: Separamos el hilo grafico del hilo de captura de red para evitar que la app se congele.
 #include <pcap.h>
 #include <winsock2.h>
 #include <thread>
@@ -20,7 +21,7 @@
 
 using namespace std;
 
-// ─── Cabeceras de red (sin padding) ─────────────────────────────────────────
+// Estructuras para las cabeceras de los protocolos de red (importante quitar el padding con pragma pack)
 #pragma pack(push, 1)
 struct ip_address { u_char b1, b2, b3, b4; };
 
@@ -42,9 +43,9 @@ struct tcp_header {
 };
 #pragma pack(pop)
 
-// ─── Estructuras de datos de la aplicación ──────────────────────────────────
+// Estructuras de datos para manejar la informacion capturada
 
-// Metadatos livianos: usados para la tabla (se copian cada frame sin costo)
+// Metadatos livianos del paquete (para mostrarlos rapido en la tabla sin saturar la memoria)
 struct PaqueteMeta {
     string ip_origen, ip_destino, protocolo, servicio;
     int    puerto_origen  = 0;
@@ -52,7 +53,7 @@ struct PaqueteMeta {
     size_t raw_size       = 0;
 };
 
-// ─── Estado global compartido entre hilos ───────────────────────────────────
+// Variables globales (usamos mutex porque la interfaz grafica y el sniffer corren al mismo tiempo)
 static vector<PaqueteMeta>          g_meta;   // metadatos para la tabla
 static vector<vector<uint8_t>>      g_raw;    // bytes crudos por paquete
 static mutex                        g_mtx;
@@ -91,7 +92,7 @@ static const char* getServicio(int puerto) {
     }
 }
 
-// ─── Callback de captura (se ejecuta en el hilo secundario) ─────────────────
+// Callback de captura: Esta funcion la manda a llamar npcap automaticamente cada que atrapa un paquete
 void packet_handler(u_char*, const struct pcap_pkthdr* hdr, const u_char* pkt) {
     if (hdr->caplen < 14) return;
 
@@ -140,7 +141,7 @@ void packet_handler(u_char*, const struct pcap_pkthdr* hdr, const u_char* pkt) {
     g_raw.push_back(move(raw));
 }
 
-// ─── Hilo de captura ─────────────────────────────────────────────────────────
+// Funcion del hilo secundario: abre la tarjeta de red y empieza el ciclo de captura (pcap_loop)
 void runCapture(string iface, string filtro) {
     char errbuf[PCAP_ERRBUF_SIZE];
     g_handle = pcap_open_live(iface.c_str(), 65536, 1, 1000, errbuf);
@@ -163,7 +164,7 @@ void runCapture(string iface, string filtro) {
     g_capturando = false;
 }
 
-// ─── Vista hexadecimal ───────────────────────────────────────────────────────
+// Funcion para formatear los bytes crudos a una vista hexadecimal clasica
 static void renderHex(const vector<uint8_t>& data) {
     if (data.empty()) { ImGui::TextDisabled("(sin datos)"); return; }
 
@@ -195,7 +196,7 @@ static void renderHex(const vector<uint8_t>& data) {
         ImVec2(800, 400), ImGuiInputTextFlags_ReadOnly);
 }
 
-// ─── Exportar CSV ─────────────────────────────────────────────────────────────
+// Funcion para guardar los datos de la tabla en un archivo Excel/CSV
 static bool exportarCSV(const char* archivo) {
     ofstream f(archivo);
     if (!f) return false;
@@ -211,7 +212,7 @@ static bool exportarCSV(const char* archivo) {
     return true;
 }
 
-// ─── Color por protocolo ──────────────────────────────────────────────────────
+// Funcion auxiliar para darle colores bonitos a cada protocolo en la tabla
 static ImVec4 colorProtocolo(const string& proto) {
     if (proto == "TCP")  return {0.40f, 0.80f, 1.00f, 1.0f};
     if (proto == "UDP")  return {0.50f, 1.00f, 0.50f, 1.0f};
@@ -222,7 +223,7 @@ static ImVec4 colorProtocolo(const string& proto) {
     return                      {0.80f, 0.80f, 0.80f, 1.0f};
 }
 
-// ─── main ─────────────────────────────────────────────────────────────────────
+// Funcion principal que levanta la interfaz grafica y controla la aplicacion
 int main() {
     // ── GLFW ──
     if (!glfwInit()) return 1;
