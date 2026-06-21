@@ -13,19 +13,9 @@ Proyecto final para la materia de Redes. Este es un sniffer de paquetes escrito 
 - **GLFW y OpenGL3**: Herramientas necesarias para poder renderizar la ventana de ImGui y los gráficos.
 
 ## Cómo Compilar
-Existen dos formas muy sencillas de compilar el proyecto:
-
-### Opción 1: Usando Visual Studio Code (Recomendada)
 Como el proyecto ya incluye la carpeta `.vscode` preconfigurada, simplemente abre la carpeta del proyecto en Visual Studio Code y presiona:
 `Ctrl + Shift + B`
 Esto generará automáticamente el ejecutable usando el compilador global `g++`.
-
-### Opción 2: Desde la Consola
-Si prefieres hacerlo manual, abre tu consola (cmd o PowerShell) en la carpeta raíz del proyecto y ejecuta este comando:
-
-```bash
-g++ -g -std=c++17 main.cpp imgui/imgui.cpp imgui/imgui_demo.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp imgui/backends/imgui_impl_glfw.cpp imgui/backends/imgui_impl_opengl3.cpp -o build/sniffer.exe -InpcapSDK/Include -Iimgui -Iimgui/backends -Iglfw/include -LnpcapSDK/Lib/x64 -Lglfw/lib-mingw-w64 -lwpcap -lPacket -lws2_32 -lglfw3 -lopengl32 -lgdi32 -static -static-libgcc -static-libstdc++ -DWPCAP -DHAVE_REMOTE
-```
 
 ## Cómo Ejecutar
 Una vez que compile sin errores, el ejecutable estará en la carpeta `build/sniffer.exe`. 
